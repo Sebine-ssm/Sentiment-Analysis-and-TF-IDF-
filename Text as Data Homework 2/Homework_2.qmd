@@ -1,0 +1,172 @@
+---
+title: "Homework 2"
+author: 'Sebine Scaria'
+format: html
+editor: visual
+---
+
+## Raw-Count Sentiment Analysis
+
+Tokenize and clean the text
+
+```{r}
+# load the libraries and texts
+library(readr) 
+library(dplyr) 
+library(tidyr)
+library(stringr) 
+library(tibble)
+library(tidytext)
+library(forcats)
+library(scales)
+library(quanteda)
+library(quanteda.textstats)
+
+circle_raw <- read_file("texts/A07594__Circle_of_Commerce.txt")
+free_trade_raw <- read_file("texts/B14801__Free_Trade.txt")
+
+text_tbl <- tibble(   
+  doc_title = c("The Circle of Commerce", "The Free Trade"), 
+  text = c(circle_raw, free_trade_raw)  
+)
+
+# Taking a look at text_tbl (or at least part of it since it's very long):
+text_tbl %>% select(doc_title)
+```
+
+```{r}
+# some regex
+text_tbl <- text_tbl %>%
+  mutate(
+    text_norm = text %>%
+      str_replace_all("\\s+", " ") %>% # collapse whitespace
+      str_to_lower()
+  )
+```
+
+```{r}
+# Start with tidytext's built-in stopword list
+data("stop_words")
+
+# Add our own project-specific stopwords (you can, and will, expand this list later)
+custom_stopwords <- tibble(
+  word = c(
+    "vnto", "haue", "doo", "hath", "bee", "ye", "thee"
+  )
+)
+
+all_stopwords <- bind_rows(stop_words, custom_stopwords) %>%
+  distinct(word)
+
+all_stopwords %>% slice(1:10)
+```
+
+```{r}
+# tokenize and clean the text
+word_counts <- text_tbl %>%
+  unnest_tokens(word, text_norm) %>%
+  mutate(word = str_to_lower(word)) %>%
+  anti_join(all_stopwords, by = "word") %>%
+  count(doc_title, word, sort = TRUE)
+
+word_counts
+```
+
+```{r}
+# Join tokens to the Bing sentiment dictionary
+bing <- get_sentiments("bing")
+
+window_sentiment <- word_counts %>%
+  inner_join(bing, by = "word") 
+
+window_sentiment
+```
+
+```{r}
+# compute raw sentiment totals
+raw_sentiment_totals <- window_sentiment %>%
+  group_by(doc_title, sentiment) %>%
+  summarise(totals = sum(n), .groups = "drop") %>%
+  pivot_wider(names_from = sentiment, values_from = totals, values_fill = 0) %>%
+  mutate(net_sentiment = positive - negative)
+
+raw_sentiment_totals
+```
+
+## TF-IDF-Weighted Sentiment Analysis
+
+```{r}
+# Step-4: Compute TF-IDF for words in each document
+tfidf_word <- word_counts %>%
+  bind_tf_idf(word, doc_title, n)
+
+# Preview top TF-IDF words
+tfidf_word %>%
+  arrange(desc(tf_idf)) %>%
+  head(20)
+```
+
+```{r}
+# Step 5: Keep only sentiment-bearing words
+sentiment_tfidf <- tfidf_word %>%
+  inner_join(bing, by = "word")
+
+# Preview sentiment words with TF-IDF scores
+sentiment_tfidf %>%
+  arrange(desc(tf_idf)) %>%
+  head(20)
+```
+
+```{r}
+sentiment_tfidf_summary <- sentiment_tfidf %>%
+group_by(doc_title) %>%
+summarise(
+tfidf_positive = sum(tf_idf[sentiment == "positive"], na.rm = TRUE),
+tfidf_negative = sum(tf_idf[sentiment == "negative"], na.rm = TRUE),
+.groups = "drop"
+) %>%
+mutate(
+# Replace missing values (NA) with 0
+tfidf_positive = tidyr::replace_na(tfidf_positive, 0),
+tfidf_negative = tidyr::replace_na(tfidf_negative, 0),
+# Net TF-IDF sentiment
+net_sentiment_tfidf = tfidf_positive - tfidf_negative
+)
+
+sentiment_tfidf_summary
+```
+
+## Compare Raw vs TF-IDF Sentiment
+
+```{r}
+# Part III: Compare Raw vs. TF-IDF Sentiment
+raw_sentiment_totals <- raw_sentiment_totals %>%
+  rename(
+    raw_positive = positive,
+    raw_negative = negative,
+    net_sentiment_raw = net_sentiment
+  )
+
+# Join both summaries
+sentiment_comparison <- raw_sentiment_totals %>%
+  left_join(sentiment_tfidf_summary, by = "doc_title")
+
+sentiment_comparison
+```
+
+```{r}
+# Export comparison table as CSV
+write_csv(sentiment_comparison, "sentiment_comparison.csv")
+```
+
+```{r}
+# Question 3: Which specific words drove the changes?
+# Look at top sentiment words by TF-IDF in each document
+
+sentiment_tfidf %>%
+  group_by(doc_title, sentiment) %>%
+  arrange(desc(tf_idf)) %>%
+  slice_head(n = 10) %>%
+  select(doc_title, word, sentiment, n, tf_idf) %>%
+  print(n = 40)
+```
